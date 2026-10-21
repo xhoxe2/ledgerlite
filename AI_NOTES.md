@@ -2,7 +2,7 @@
 
 ## Інструменти
 
-- **Claude Code**: Opus 5.5 — керівний агент (план, розподіл задач, перезапуск тестів, мутації); Haiku 5.5 і Sonnet 5.5 — субагенти, що писали тести, код і рев'ю. У `Co-Authored-By` комітів стоїть модель, яка робила саме цей коміт.
+- **Claude Code**: Opus 5.5 — керівний агент (план, розподіл задач, перезапуск тестів, мутації); Haiku 5.5 і Sonnet 5.5 — субагенти, що писали тести, код і рев'ю. У `Co-Authored-By` комітів стоїть модель, яка робила саме цей коміт, крім `966b7d8`: там Opus, бо його код переписано з плану, який написав Opus.
 - **Superpowers**: brainstorming (дизайн і spec), writing-plans (план), subagent-driven-development (задачі субагентам), test-driven-development (тести першими), verification-before-completion (перевірка перед «готово»).
 - **ponytail** — найменша повна зміна; **code-quality** — стандарти рев'ю коду.
 - **PR Review Toolkit** (code-reviewer, silent-failure-hunter, pr-test-analyzer) — рев'ю в контрольній точці після переказів.

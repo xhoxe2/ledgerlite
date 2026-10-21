@@ -38,8 +38,8 @@ async def claim(
     )
     if claimed:
         return None
-    # The INSERT above waited for any in-flight request with this key to commit,
-    # so its saved response is visible to this statement.
+    # A parallel retry cannot get here before the first request commits: both lock the same
+    # accounts (FOR UPDATE) before claiming, so the saved response is visible to this statement.
     row = await conn.fetchrow(
         """
         SELECT request_hash, status_code, response FROM idempotency_keys
