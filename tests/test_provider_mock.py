@@ -71,6 +71,11 @@ async def test_requests_need_the_bearer_key(mock):
     assert response.status_code == 401
 
 
+async def test_health_needs_no_auth(mock):
+    response = await mock.get("/health")
+    assert (response.status_code, response.json()) == (200, {"status": "ok"})
+
+
 async def test_new_invoice_is_pending(mock):
     invoice_id = await new_invoice(mock)
     invoice = (await mock.get(f"/invoices/{invoice_id}", headers=AUTH)).json()

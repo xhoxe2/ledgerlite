@@ -411,3 +411,30 @@ async def test_signed_but_malformed_json_is_400(client, signed_webhook):
     response = await client.post("/v1/webhooks/provider", content=body, headers=headers)
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "invalid_json"
+
+
+async def test_unsigned_oversized_body_is_413_not_401(client):
+    response = await client.post("/v1/webhooks/provider", content=b"x" * 65537)
+    assert response.status_code == 413
+    error = response.json()["error"]
+    assert (error["code"], error["details"]) == ("payload_too_large", {"max_bytes": 65536})
+
+
+async def test_oversized_body_without_content_length_is_413(client):
+    body = b"x" * 65537
+
+    async def in_chunks():
+        for start in range(0, len(body), 4096):
+            yield body[start : start + 4096]
+
+    request = client.build_request("POST", "/v1/webhooks/provider", content=in_chunks())
+    assert "Content-Length" not in request.headers  # so the limit cannot rely on the header
+    response = await client.send(request)
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "payload_too_large"
+
+
+async def test_body_of_exactly_the_limit_reaches_the_signature_check(client):
+    response = await client.post("/v1/webhooks/provider", content=b"x" * 65536)
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_signature"
