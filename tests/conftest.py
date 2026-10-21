@@ -1,6 +1,10 @@
 """Shared fixtures: a wallet app on the test database and a way to create accounts."""
 
+import hashlib
+import hmac
+import json
 import os
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -89,3 +93,22 @@ def make_account(app: FastAPI) -> MakeAccount:
         return account_id, {"X-API-Key": api_key}
 
     return create
+
+
+@pytest.fixture
+def signed_webhook() -> Callable[..., tuple[bytes, dict[str, str]]]:
+    def build(
+        payload: dict | bytes, *, secret: str = WEBHOOK_SECRET, timestamp_offset: int = 0
+    ) -> tuple[bytes, dict[str, str]]:
+        """Signs a webhook body the way the provider contract describes."""
+        body = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+        timestamp = str(int(time.time()) + timestamp_offset)
+        digest = hmac.new(secret.encode(), timestamp.encode() + b"." + body, hashlib.sha256)
+        headers = {
+            "Content-Type": "application/json",
+            "X-Timestamp": timestamp,
+            "X-Signature": f"sha256={digest.hexdigest()}",
+        }
+        return body, headers
+
+    return build
