@@ -37,9 +37,28 @@ def settings() -> Settings:
     )
 
 
+class FakeProvider:
+    """Stands in for the payment provider; a test sets `respond` to script its answers."""
+
+    def __init__(self) -> None:
+        self.requests: list[httpx.Request] = []
+        self.respond: Callable[[httpx.Request], httpx.Response] = lambda request: httpx.Response(
+            500
+        )
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        return self.respond(request)
+
+
 @pytest.fixture
-async def app(settings: Settings) -> AsyncIterator[FastAPI]:
-    application = create_app(settings)
+def provider() -> FakeProvider:
+    return FakeProvider()
+
+
+@pytest.fixture
+async def app(settings: Settings, provider: FakeProvider) -> AsyncIterator[FastAPI]:
+    application = create_app(settings, provider_transport=httpx.MockTransport(provider.handle))
     async with application.router.lifespan_context(application):
         await application.state.pool.execute(
             "TRUNCATE accounts, deposits, ledger_entries, idempotency_keys, rate_limits"
