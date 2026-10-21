@@ -81,7 +81,7 @@ def verify_signature(
         sent_at = int(timestamp)
     except ValueError:
         raise _invalid_signature() from None
-    if abs(time.time() - sent_at) > SIGNATURE_TOLERANCE_SECONDS:
+    if abs(int(time.time()) - sent_at) > SIGNATURE_TOLERANCE_SECONDS:
         raise _invalid_signature()
     expected = hmac.new(secret.encode(), timestamp.encode() + b"." + raw_body, hashlib.sha256)
     # Bytes, not str: compare_digest raises TypeError on str with non-ASCII characters.
