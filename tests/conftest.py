@@ -74,7 +74,7 @@ async def app(settings: Settings, provider: FakeProvider) -> AsyncIterator[FastA
     application = create_app(settings, provider_transport=httpx.MockTransport(provider.handle))
     async with application.router.lifespan_context(application):
         await application.state.pool.execute(
-            "TRUNCATE accounts, deposits, ledger_entries, idempotency_keys, rate_limits"
+            "TRUNCATE accounts, deposits, ledger_entries, idempotency_keys, rate_limit_hits"
         )
         yield application
 

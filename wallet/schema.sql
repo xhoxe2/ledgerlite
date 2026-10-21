@@ -45,9 +45,8 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
     PRIMARY KEY (account_id, key)
 );
 
-CREATE TABLE IF NOT EXISTS rate_limits (
-    account_id   UUID NOT NULL REFERENCES accounts (id),
-    window_start TIMESTAMPTZ NOT NULL,
-    count        INT NOT NULL,
-    PRIMARY KEY (account_id, window_start)
+CREATE TABLE IF NOT EXISTS rate_limit_hits (
+    account_id UUID NOT NULL REFERENCES accounts (id),
+    at         TIMESTAMPTZ NOT NULL
 );
+CREATE INDEX IF NOT EXISTS rate_limit_hits_account_id_at ON rate_limit_hits (account_id, at);
