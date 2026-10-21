@@ -101,6 +101,13 @@ async def test_duplicate_sends_the_same_event_twice(mock, webhooks):
     assert webhooks[0].content == webhooks[1].content
 
 
+async def test_deliver_webhook_false_sends_nothing(mock, webhooks):
+    invoice_id = await new_invoice(mock)
+    response = await simulate(mock, invoice_id, status="expired", deliver_webhook=False)
+    assert (response.status_code, response.json()["deliveries"]) == (200, [])
+    assert webhooks == []
+
+
 async def test_final_invoice_does_not_change(mock):
     invoice_id = await new_invoice(mock)
     await simulate(mock, invoice_id, status="expired", deliver_webhook=False)

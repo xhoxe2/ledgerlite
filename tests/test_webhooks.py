@@ -1,6 +1,10 @@
 """Provider webhooks: signature checks, crediting, duplicates and late events."""
 
 import asyncio
+import hashlib
+import hmac
+import json
+import time
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -52,6 +56,11 @@ async def balance_of(app, account_id) -> Decimal:
     )
 
 
+def signature_header(secret: str, timestamp: str, body: bytes) -> str:
+    digest = hmac.new(secret.encode(), timestamp.encode() + b"." + body, hashlib.sha256)
+    return f"sha256={digest.hexdigest()}"
+
+
 async def test_paid_webhook_credits_amount_minus_fee(app, pending_deposit, send_webhook):
     account_id = await pending_deposit()
     response = await send_webhook()
@@ -75,6 +84,16 @@ async def test_partially_paid_credits_what_was_paid_minus_fee(app, pending_depos
     assert await balance_of(app, account_id) == Decimal("7.39")  # fee 0.1125 rounds to 0.11
 
 
+async def test_partially_paid_with_nothing_paid_writes_no_ledger_entry(
+    app, pending_deposit, send_webhook
+):
+    account_id = await pending_deposit()
+    response = await send_webhook(status="partially_paid", paid_amount="0.00")
+    assert (response.status_code, response.json()) == (200, {"result": "applied"})
+    assert await app.state.pool.fetchval("SELECT count(*) FROM ledger_entries") == 0
+    assert await balance_of(app, account_id) == Decimal("0.00")
+
+
 async def test_expired_closes_the_deposit_and_later_events_change_nothing(
     app, pending_deposit, send_webhook
 ):
@@ -84,6 +103,16 @@ async def test_expired_closes_the_deposit_and_later_events_change_nothing(
     assert (expired.json(), late.json()) == ({"result": "applied"}, {"result": "ignored"})
     assert await balance_of(app, account_id) == Decimal("0.00")
     assert await app.state.pool.fetchval("SELECT status FROM deposits") == "expired"
+
+
+async def test_expired_never_credits_even_when_it_carries_a_paid_amount(
+    app, pending_deposit, send_webhook
+):
+    account_id = await pending_deposit()
+    await send_webhook(status="expired", paid_amount="10.00")
+    assert await balance_of(app, account_id) == Decimal("0.00")
+    deposit = await app.state.pool.fetchrow("SELECT status, credited FROM deposits")
+    assert dict(deposit) == {"status": "expired", "credited": None}
 
 
 async def test_repeated_event_is_credited_once(app, pending_deposit, send_webhook):
@@ -125,6 +154,64 @@ async def test_missing_signature_headers_are_401(client, pending_deposit):
     await pending_deposit()
     response = await client.post("/v1/webhooks/provider", json=EVENT)
     assert response.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "headers_for",
+    [
+        lambda timestamp, sign: {"X-Timestamp": timestamp},
+        lambda timestamp, sign: {"X-Signature": sign(timestamp)},
+        lambda timestamp, sign: {"X-Timestamp": "abc", "X-Signature": sign("abc")},
+        lambda timestamp, sign: {
+            "X-Timestamp": timestamp,
+            "X-Signature": sign(timestamp).removeprefix("sha256="),
+        },
+    ],
+    ids=["timestamp-only", "signature-only", "non-numeric-timestamp", "no-sha256-prefix"],
+)
+async def test_malformed_signature_headers_are_401_and_credit_nothing(
+    app, client, pending_deposit, settings, headers_for
+):
+    account_id = await pending_deposit()
+    body = json.dumps(EVENT).encode()
+
+    def sign(timestamp: str) -> str:
+        return signature_header(settings.webhook_secret, timestamp, body)
+
+    headers = headers_for(str(int(time.time())), sign)
+    response = await client.post("/v1/webhooks/provider", content=body, headers=headers)
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_signature"
+    assert await balance_of(app, account_id) == Decimal("0.00")
+
+
+async def test_oversized_timestamp_is_401(client, pending_deposit, settings):
+    await pending_deposit()
+    body = json.dumps(EVENT).encode()
+    timestamp = "1" + "0" * 400
+    headers = {
+        "X-Timestamp": timestamp,
+        "X-Signature": signature_header(settings.webhook_secret, timestamp, body),
+    }
+    response = await client.post("/v1/webhooks/provider", content=body, headers=headers)
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_signature"
+
+
+async def test_signature_covers_the_raw_bytes_not_a_reserialized_body(
+    app, client, pending_deposit, signed_webhook
+):
+    account_id = await pending_deposit()
+    body, headers = signed_webhook(json.dumps(EVENT, separators=(",", ":")).encode())
+    response = await client.post("/v1/webhooks/provider", content=body, headers=headers)
+    assert (response.status_code, response.json()) == (200, {"result": "applied"})
+    assert await balance_of(app, account_id) == Decimal("9.85")
+
+
+async def test_unsigned_malformed_json_is_401_not_400(client):
+    response = await client.post("/v1/webhooks/provider", content=b"{not json")
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_signature"
 
 
 async def test_tampered_body_is_401(client, pending_deposit, signed_webhook):

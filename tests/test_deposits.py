@@ -6,6 +6,8 @@ from uuid import UUID
 import httpx
 import pytest
 
+from wallet.provider import new_provider_client
+
 pytestmark = pytest.mark.anyio
 
 INVOICE = {"invoice_id": "inv_1", "status": "pending", "pay_url": "http://provider.test/pay/inv_1"}
@@ -52,9 +54,10 @@ def failing_with(error_class):
         (failing_with(httpx.ReadTimeout), 504, "provider_timeout"),
         (failing_with(httpx.ConnectError), 503, "provider_unavailable"),
         (lambda request: httpx.Response(500, json={"detail": "boom"}), 502, "provider_error"),
+        (lambda request: httpx.Response(500, json=INVOICE), 502, "provider_error"),
         (lambda request: httpx.Response(201, json={"status": "pending"}), 502, "provider_error"),
     ],
-    ids=["timeout", "unreachable", "provider-5xx", "missing-fields"],
+    ids=["timeout", "unreachable", "provider-5xx", "provider-5xx-with-invoice", "missing-fields"],
 )
 async def test_provider_failure_is_a_clear_error_and_stores_nothing(
     app, client, make_account, provider, respond, status, code
@@ -65,6 +68,11 @@ async def test_provider_failure_is_a_clear_error_and_stores_nothing(
     assert response.status_code == status
     assert response.json()["error"]["code"] == code
     assert await app.state.pool.fetchval("SELECT count(*) FROM deposits") == 0
+
+
+async def test_provider_client_carries_the_timeouts(settings):
+    async with new_provider_client(settings) as client:
+        assert client.timeout == httpx.Timeout(5.0, connect=2.0)
 
 
 async def test_amount_as_a_number_is_422(client, make_account):
