@@ -66,14 +66,25 @@ def test_amount_is_normalized_to_cents():
         '"0"',
         '"0.00"',
         '"NaN"',
-        '"\\u0663"',  # ARABIC-INDIC DIGIT THREE: Decimal() would accept it
+        '"1\\u0663"',  # ASCII 1 + ARABIC-INDIC DIGIT THREE: \d would accept it, Decimal() reads 13
         "null",
         '"1000000000000.00"',
+        '"1.\\u0663"',  # \d would read it as 1.3
+        '"10."',  # a trailing dot is not an amount
+        '".5"',  # the integer part is required
+        '"+1.00"',  # no sign
+        '"10.00\\n"',  # $ matches before a trailing newline, fullmatch does not
     ],
 )
 def test_amount_rejects_anything_else(raw_json):
     with pytest.raises(ValidationError):
         Payment.model_validate_json(f'{{"amount": {raw_json}}}')
+
+
+@pytest.mark.parametrize("raw_json", ["10.5", '"10.001"', '"1e2"', '"1\\u0663"'])
+def test_paid_amount_rejects_numbers_and_non_decimal_strings(raw_json):
+    with pytest.raises(ValidationError):
+        PaidAmount.model_validate_json(f'{{"amount": {raw_json}}}')
 
 
 def test_non_negative_money_accepts_zero():
