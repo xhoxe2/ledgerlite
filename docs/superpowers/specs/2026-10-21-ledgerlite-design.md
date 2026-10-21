@@ -67,13 +67,17 @@ wallet ──▶ PostgreSQL
 | `wallet/idempotency.py` | `request_hash`, `claim`, `save` |
 | `wallet/ratelimit.py` | залежність `rate_limited_account_id` |
 | `wallet/accounts.py` | `GET /v1/accounts/me` |
-| `wallet/deposits.py` | `POST /v1/deposits`, `POST /v1/webhooks/provider`, `apply_invoice_status()`, `reconcile()` |
+| `wallet/health.py` | `GET /health`: сервіс відповідає й може виконати запит до БД |
+| `wallet/deposits.py` | `POST /v1/deposits` |
+| `wallet/webhooks.py` | `POST /v1/webhooks/provider`, ліміт тіла 64 КіБ |
+| `wallet/invoice_status.py` | `apply_invoice_status()`: єдиний перехід `pending → фінальний`, спільний для вебхука й звірки |
+| `wallet/reconcile.py` | `reconcile()` |
 | `wallet/transfers.py` | `POST /v1/transfers` |
 | `wallet/purchases.py` | `POST /v1/purchases` |
 | `wallet/transactions.py` | `GET /v1/transactions` |
 | `wallet/cli.py` | команди `create-account` і `reconcile` |
 
-Один `Dockerfile` (python:3.12-slim + uv) на обидва сервіси. Compose запускає `db` (postgres:17-alpine з healthcheck), `provider` і `wallet`; wallet чекає, доки БД стане здоровою. Обидва сервіси стартують через фабрику застосунку: `uvicorn --factory wallet.app:create_app` і `uvicorn --factory provider_mock.app:create_app`.
+Один `Dockerfile` (python:3.12-slim + uv) на обидва сервіси. Compose запускає `db` (postgres:17-alpine), `provider` і `wallet`, і в кожного є healthcheck: у сервісів це `GET /health` через Python образу, бо curl у slim-образі немає. Wallet чекає, доки БД і провайдер стануть здоровими. Обидва сервіси стартують через фабрику застосунку: `uvicorn --factory wallet.app:create_app` і `uvicorn --factory provider_mock.app:create_app`.
 
 ### Конфігурація
 
@@ -306,9 +310,11 @@ CREATE INDEX IF NOT EXISTS rate_limit_hits_account_id_at ON rate_limit_hits (acc
 | 404 | `not_found` (немає маршруту), `account_not_found`, `unknown_invoice` |
 | 405 | `method_not_allowed` |
 | 409 | `insufficient_funds`, `idempotency_key_reused` |
+| 413 | `payload_too_large` (тіло вебхука понад 64 КіБ) |
 | 422 | `validation_error` (у `details` — поля з помилками), `same_account` |
 | 429 | `rate_limited` |
 | 502 / 503 / 504 | `provider_error` / `provider_unavailable` / `provider_timeout` |
+| 503 | `db_unavailable` (`GET /health`) |
 | 500 | `internal_error` (подробиці лише в лог) |
 
 Обробники: `ApiError`; `RequestValidationError` (тип `json_invalid` → 400, решта → 422); `StarletteHTTPException` (404 і 405 маршрутизації); `Exception` → 500.
