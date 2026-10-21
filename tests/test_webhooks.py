@@ -4,11 +4,14 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import time
 from decimal import Decimal
 from uuid import UUID, uuid4
 
 import pytest
+
+from wallet.deposits import apply_invoice_status
 
 pytestmark = pytest.mark.anyio
 
@@ -56,6 +59,13 @@ async def balance_of(app, account_id) -> Decimal:
     )
 
 
+async def closed_deposit(app) -> dict:
+    row = await app.state.pool.fetchrow(
+        "SELECT status, paid_amount, credited, closed_by_event_id FROM deposits"
+    )
+    return dict(row)
+
+
 def signature_header(secret: str, timestamp: str, body: bytes) -> str:
     digest = hmac.new(secret.encode(), timestamp.encode() + b"." + body, hashlib.sha256)
     return f"sha256={digest.hexdigest()}"
@@ -76,6 +86,41 @@ async def test_paid_webhook_credits_amount_minus_fee(app, pending_deposit, send_
         "credited": Decimal("9.85"),
         "closed_by_event_id": "evt_1",
     }
+
+
+async def test_the_credit_is_a_deposit_ledger_entry_that_points_at_the_deposit(
+    app, pending_deposit, send_webhook
+):
+    account_id = await pending_deposit()
+    await send_webhook()
+    deposit_id = await app.state.pool.fetchval("SELECT id FROM deposits")
+    [entry] = await app.state.pool.fetch(
+        "SELECT account_id, type, amount_usd, ref_id FROM ledger_entries"
+    )
+    assert dict(entry) == {
+        "account_id": account_id,
+        "type": "deposit",
+        "amount_usd": Decimal("9.85"),
+        "ref_id": deposit_id,
+    }
+
+
+@pytest.mark.parametrize(
+    ("deposit", "paid", "credited"),
+    [
+        ("10.00", "12.00", "11.82"),
+        ("10.00", "9.00", "8.86"),  # the fee 0.135 is a tie and rounds up to 0.14
+        ("0.99", "0.99", "0.98"),
+        ("33.33", "33.33", "32.83"),
+    ],
+    ids=["paid-more-than-asked", "paid-less-than-asked", "fee-rounds-down", "fee-rounds-up"],
+)
+async def test_the_credit_follows_the_paid_amount_not_the_deposit_amount(
+    app, pending_deposit, send_webhook, deposit, paid, credited
+):
+    account_id = await pending_deposit(deposit)
+    await send_webhook(paid_amount=paid)
+    assert await balance_of(app, account_id) == Decimal(credited)
 
 
 async def test_partially_paid_credits_what_was_paid_minus_fee(app, pending_deposit, send_webhook):
@@ -113,6 +158,102 @@ async def test_expired_never_credits_even_when_it_carries_a_paid_amount(
     assert await balance_of(app, account_id) == Decimal("0.00")
     deposit = await app.state.pool.fetchrow("SELECT status, credited FROM deposits")
     assert dict(deposit) == {"status": "expired", "credited": None}
+
+
+async def test_a_paid_deposit_ignores_later_partial_and_expired_events(
+    app, pending_deposit, send_webhook
+):
+    account_id = await pending_deposit()
+    await send_webhook()
+    partial = await send_webhook(event_id="evt_2", status="partially_paid", paid_amount="3.00")
+    expired = await send_webhook(event_id="evt_3", status="expired", paid_amount="0.00")
+    assert (partial.json(), expired.json()) == ({"result": "ignored"}, {"result": "ignored"})
+    assert await balance_of(app, account_id) == Decimal("9.85")
+    assert await closed_deposit(app) == {
+        "status": "paid",
+        "paid_amount": Decimal("10.00"),
+        "credited": Decimal("9.85"),
+        "closed_by_event_id": "evt_1",
+    }
+
+
+async def test_a_partially_paid_deposit_ignores_a_later_paid_event(
+    app, pending_deposit, send_webhook
+):
+    account_id = await pending_deposit()
+    await send_webhook(status="partially_paid", paid_amount="7.50")
+    late = await send_webhook(event_id="evt_2", status="paid", paid_amount="10.00")
+    assert late.json() == {"result": "ignored"}
+    assert await balance_of(app, account_id) == Decimal("7.39")
+    assert await closed_deposit(app) == {
+        "status": "partially_paid",
+        "paid_amount": Decimal("7.50"),
+        "credited": Decimal("7.39"),
+        "closed_by_event_id": "evt_1",
+    }
+
+
+async def test_a_deposit_closed_without_an_event_ignores_webhooks(
+    app, pending_deposit, send_webhook
+):
+    account_id = await pending_deposit()
+    async with app.state.pool.acquire() as conn, conn.transaction():
+        closed = await apply_invoice_status(
+            conn,
+            invoice_id="inv_1",
+            status="paid",
+            paid_amount=Decimal("10.00"),
+            event_id=None,
+        )
+    late = await send_webhook()
+    assert (closed, late.json()) == ("applied", {"result": "ignored"})
+    assert await balance_of(app, account_id) == Decimal("9.85")
+    assert await app.state.pool.fetchval("SELECT count(*) FROM ledger_entries") == 1
+
+
+async def test_a_new_event_for_a_closed_deposit_is_ignored_and_logged(
+    pending_deposit, send_webhook, caplog
+):
+    await pending_deposit()
+    await send_webhook(status="expired", paid_amount="0.00")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="wallet.deposits"):
+        late = await send_webhook(event_id="evt_2")
+    assert late.json() == {"result": "ignored"}
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "wallet.deposits" and record.levelno == logging.WARNING
+    ]
+    assert any("inv_1" in message and "evt_2" in message for message in warnings), warnings
+
+
+async def test_a_repeat_of_the_closing_event_is_ignored_without_a_warning(
+    pending_deposit, send_webhook, caplog
+):
+    await pending_deposit()
+    await send_webhook()
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="wallet.deposits"):
+        repeat = await send_webhook()
+    assert repeat.json() == {"result": "ignored"}
+    assert [r for r in caplog.records if r.name == "wallet.deposits"] == []
+
+
+async def test_a_status_that_is_not_final_is_refused_and_changes_nothing(app, pending_deposit):
+    account_id = await pending_deposit()
+    with pytest.raises(ValueError):
+        async with app.state.pool.acquire() as conn, conn.transaction():
+            await apply_invoice_status(
+                conn,
+                invoice_id="inv_1",
+                status="pending",
+                paid_amount=Decimal("5.00"),
+                event_id="evt_x",
+            )
+    assert await balance_of(app, account_id) == Decimal("0.00")
+    assert await app.state.pool.fetchval("SELECT status FROM deposits") == "pending"
+    assert await app.state.pool.fetchval("SELECT count(*) FROM ledger_entries") == 0
 
 
 async def test_repeated_event_is_credited_once(app, pending_deposit, send_webhook):

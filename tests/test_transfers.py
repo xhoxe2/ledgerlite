@@ -37,11 +37,16 @@ async def test_transfer_moves_money_and_records_both_legs(app, client, make_acco
     assert await balance_of(app, alice) == Decimal("6.00")
     assert await balance_of(app, bob) == Decimal("4.00")
     legs = await app.state.pool.fetch(
-        "SELECT type, amount_usd, ref_id FROM ledger_entries ORDER BY id"
+        """
+        SELECT account_id, type, amount_usd, counterparty_id, ref_id
+        FROM ledger_entries ORDER BY id
+        """
     )
-    assert [(leg["type"], leg["amount_usd"]) for leg in legs] == [
-        ("transfer_out", Decimal("-4.00")),
-        ("transfer_in", Decimal("4.00")),
+    assert [
+        (leg["account_id"], leg["type"], leg["amount_usd"], leg["counterparty_id"]) for leg in legs
+    ] == [
+        (alice, "transfer_out", Decimal("-4.00"), bob),
+        (bob, "transfer_in", Decimal("4.00"), alice),
     ]
     assert {str(leg["ref_id"]) for leg in legs} == {body["transfer_id"]}
 
@@ -65,6 +70,24 @@ async def test_same_key_with_another_body_is_409(app, client, make_account):
     assert await balance_of(app, alice) == Decimal("6.00")
 
 
+async def test_same_key_with_another_recipient_is_409_and_the_original_still_replays(
+    app, client, make_account
+):
+    alice, headers = await make_account("alice", balance_usd="10.00")
+    bob, _ = await make_account("bob")
+    carol, _ = await make_account("carol")
+    first = await transfer(client, headers, bob, "4.00")
+    reused = await transfer(client, headers, carol, "4.00")
+    assert reused.status_code == 409
+    assert reused.json()["error"]["code"] == "idempotency_key_reused"
+    assert await balance_of(app, alice) == Decimal("6.00")
+    assert await balance_of(app, bob) == Decimal("4.00")
+    assert await balance_of(app, carol) == Decimal("0.00")
+    replay = await transfer(client, headers, bob, "4.00")
+    assert (replay.status_code, replay.content) == (first.status_code, first.content)
+    assert await app.state.pool.fetchval("SELECT count(*) FROM ledger_entries") == 2
+
+
 async def test_keys_are_scoped_per_account(client, make_account):
     _, alice_headers = await make_account("alice", balance_usd="10.00")
     _, bob_headers = await make_account("bob", balance_usd="10.00")
@@ -84,6 +107,23 @@ async def test_missing_idempotency_key_is_400(client, make_account):
     assert response.json()["error"]["code"] == "invalid_idempotency_key"
 
 
+@pytest.mark.parametrize("key", ["", "k" * 256], ids=["empty", "256-chars"])
+async def test_an_idempotency_key_outside_1_to_255_chars_is_400(app, client, make_account, key):
+    alice, headers = await make_account("alice", balance_usd="10.00")
+    bob, _ = await make_account("bob")
+    response = await transfer(client, headers, bob, "1.00", key=key)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_idempotency_key"
+    assert await balance_of(app, alice) == Decimal("10.00")
+
+
+async def test_an_idempotency_key_of_255_chars_is_accepted(client, make_account):
+    _, headers = await make_account("alice", balance_usd="10.00")
+    bob, _ = await make_account("bob")
+    response = await transfer(client, headers, bob, "1.00", key="k" * 255)
+    assert response.status_code == 201
+
+
 async def test_insufficient_funds_is_409_and_replays_the_same_error(app, client, make_account):
     alice, headers = await make_account("alice", balance_usd="3.00")
     bob, _ = await make_account("bob")
@@ -101,6 +141,24 @@ async def test_unknown_recipient_is_404(client, make_account):
     response = await transfer(client, headers, uuid4(), "1.00")
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "account_not_found"
+
+
+async def test_unknown_recipient_replays_the_same_404_even_after_it_exists(
+    app, client, make_account
+):
+    alice, headers = await make_account("alice", balance_usd="10.00")
+    recipient = uuid4()
+    first = await transfer(client, headers, recipient, "1.00")
+    assert first.status_code == 404
+    assert first.json()["error"]["code"] == "account_not_found"
+    await app.state.pool.execute(
+        "INSERT INTO accounts (id, name, api_key_hash) VALUES ($1, 'bob', 'hash-of-bobs-key')",
+        recipient,
+    )
+    replay = await transfer(client, headers, recipient, "1.00")
+    assert (replay.status_code, replay.content) == (first.status_code, first.content)
+    assert await balance_of(app, alice) == Decimal("10.00")
+    assert await balance_of(app, recipient) == Decimal("0.00")
 
 
 async def test_transfer_to_self_is_422(client, make_account):

@@ -7,6 +7,7 @@ import os
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from decimal import Decimal
+from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 import httpx
@@ -20,6 +21,14 @@ from wallet.config import Settings
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL", "postgresql://ledger:ledger@localhost:55432/ledger_test"
 )
+# The compose database publishes the real `ledger` database on the same port, and the fixtures
+# TRUNCATE every table, so a test run must never be pointed at a database not meant for tests.
+DATABASE_NAME = urlparse(TEST_DATABASE_URL).path.lstrip("/")
+if not DATABASE_NAME.endswith("_test"):
+    raise pytest.UsageError(
+        f"TEST_DATABASE_URL must name a database ending in '_test', got {DATABASE_NAME!r}: "
+        "the tests TRUNCATE its tables"
+    )
 WEBHOOK_SECRET = "test-webhook-secret"
 
 MakeAccount = Callable[..., Awaitable[tuple[UUID, dict[str, str]]]]
