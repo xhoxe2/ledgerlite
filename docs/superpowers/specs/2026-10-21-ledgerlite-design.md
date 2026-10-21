@@ -23,7 +23,7 @@
 - ретраї `POST /invoices`: інвойс у провайдера не ідемпотентний, і повтор міг би створити другий;
 - `Idempotency-Key` для покупок і депозитів: ТЗ вимагає його лише для переказів;
 - інструмент міграцій: `schema.sql` застосовується під час старту wallet;
-- очищення старих ключів ідемпотентності та вікон rate limit;
+- очищення старих ключів ідемпотентності;
 - окремі таблиці `users`, `api_keys`, `webhook_events`, `transfers`, `purchases` (чому — у розділі 4).
 
 ## 2. Стек
@@ -139,12 +139,11 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
     PRIMARY KEY (account_id, key)
 );
 
-CREATE TABLE IF NOT EXISTS rate_limits (
-    account_id   UUID NOT NULL REFERENCES accounts (id),
-    window_start TIMESTAMPTZ NOT NULL,
-    count        INT NOT NULL,
-    PRIMARY KEY (account_id, window_start)
+CREATE TABLE IF NOT EXISTS rate_limit_hits (
+    account_id UUID NOT NULL REFERENCES accounts (id),
+    at         TIMESTAMPTZ NOT NULL
 );
+CREATE INDEX IF NOT EXISTS rate_limit_hits_account_id_at ON rate_limit_hits (account_id, at);
 ```
 
 Рішення:
@@ -156,7 +155,7 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 - `webhook_events` не потрібна. Статуси провайдера фінальні, тож і дубль із тим самим `event_id`, і пізній вебхук упираються в один перехід `pending → фінальний` під `FOR UPDATE`. `event_id`, який закрив депозит, лишається в `closed_by_event_id` для аудиту.
 - Статусу `failed` немає: депозит пишеться в БД лише після того, як провайдер повернув інвойс.
 - `idempotency_keys.status_code` і `response` заповнюються в тій самій транзакції, що й вставка ключа, тож інші транзакції ніколи не бачать там `NULL`. `response` — точне тіло відповіді текстом, а не JSONB: JSONB переставляє ключі, а повтор має повернути ті самі байти.
-- Ключі ідемпотентності та вікна rate limit ніколи не видаляються; у коді це позначено коментарем `shortcut:`.
+- Ключі ідемпотентності ніколи не видаляються; у коді це позначено коментарем `shortcut:`. Записи rate limit, старші за хвилину, видаляє перевірка того самого ключа.
 
 ## 5. Гроші
 
@@ -277,9 +276,9 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 ### 6.9 Rate limit (бонус)
 
 - Залежність `rate_limited_account_id` стоїть на трьох POST із API-ключем: deposits, transfers, purchases. Вебхук ключа не має й під ліміт не потрапляє.
-- `INSERT INTO rate_limits … VALUES ($1, date_trunc('minute', now()), 1) ON CONFLICT DO UPDATE SET count = rate_limits.count + 1 RETURNING count`.
-- `count > 30` → 429 `rate_limited` із заголовком `Retry-After` — секунди до кінця поточної хвилини (мінімум 1).
-- `shortcut:` фіксоване вікно на стику хвилин пропускає до 60 запитів; ковзне вікно варто робити, лише якщо це стане важливим.
+- Ковзне вікно 60 секунд. В одній транзакції під `pg_advisory_xact_lock` на ключ: видалити записи цього ключа в `rate_limit_hits`, старші за хвилину, порахувати решту й знайти найстаріший. Час береться з `clock_timestamp()` після блокування.
+- Менше 30 записів → запит записується й проходить. Інакше 429 `rate_limited` із заголовком `Retry-After` — секунди, доки найстаріший запис не вийде з вікна (мінімум 1). Відхилений запит не записується, інакше клієнт, який повторює запити, ніколи не вийде з-під ліміту.
+- Блокування advisory, а не рядка `accounts`: перекази блокують рахунки у власному порядку й не мають чекати на лімітер.
 
 ### 6.10 provider-mock
 
@@ -334,7 +333,7 @@ CREATE TABLE IF NOT EXISTS rate_limits (
   - формат помилок для неіснуючого маршруту й битого JSON;
   - у відповідях суми — рядки, а не float;
   - ключ у БД зберігається хешем;
-  - звірка та rate limit (31-й POST → 429, вебхук не рахується);
+  - звірка та rate limit (31-й POST за 60 секунд → 429, зокрема на стику хвилин; паралельні POST не проскакують; вебхук не рахується);
   - мок надсилає підписаний вебхук і його дубль, фінальний інвойс не змінюється.
 
 ## 9. CI і Docker
@@ -361,5 +360,4 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 - Вебхук може прийти раніше, ніж wallet запише депозит (між відповіддю провайдера й `INSERT`). Тоді wallet поверне 404 `unknown_invoice`, і справжній провайдер повторить вебхук. У моку вебхук можливий лише після `simulate`, а `invoice_id` клієнт отримує вже після запису, тож тут цей випадок не виникає.
 - Якщо провайдер створив інвойс, а `INSERT` депозиту впав, у провайдера лишається інвойс-сирота. Клієнт не отримав `pay_url`, тож оплатити його не може.
 - `schema.sql` застосовується під час кожного старту wallet. Це безпечно, поки процес один (`shortcut:`); для кількох процесів — Alembic або advisory lock.
-- Ключі ідемпотентності та вікна rate limit не прибираються (`shortcut:`).
-- Rate limit на фіксованому вікні (`shortcut:`, див. 6.9).
+- Ключі ідемпотентності не прибираються (`shortcut:`).
