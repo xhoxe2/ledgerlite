@@ -1,4 +1,5 @@
 import pytest
+
 from wallet.auth import hash_api_key
 from wallet.cli import create_account
 

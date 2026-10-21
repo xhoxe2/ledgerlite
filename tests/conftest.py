@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 from fastapi import FastAPI
+
 from wallet.app import create_app
 from wallet.auth import hash_api_key, new_api_key
 from wallet.config import Settings
