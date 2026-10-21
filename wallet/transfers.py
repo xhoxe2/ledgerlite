@@ -9,10 +9,10 @@ from fastapi import APIRouter, Depends, Header, Request, Response
 from pydantic import BaseModel
 
 from wallet import idempotency
-from wallet.auth import current_account_id
 from wallet.errors import ApiError
 from wallet.ledger import post_entry
 from wallet.money import PositiveMoney
+from wallet.ratelimit import rate_limited_account_id
 
 router = APIRouter()
 
@@ -35,7 +35,7 @@ class TransferOut(BaseModel):
 async def create_transfer(
     request: Request,
     body: TransferIn,
-    account_id: Annotated[UUID, Depends(current_account_id)],
+    account_id: Annotated[UUID, Depends(rate_limited_account_id)],
     idempotency_key: Annotated[str | None, Header()] = None,
 ) -> Response:
     if not idempotency_key or len(idempotency_key) > MAX_IDEMPOTENCY_KEY_LENGTH:

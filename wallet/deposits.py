@@ -13,10 +13,10 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ValidationError
 
 from wallet import provider
-from wallet.auth import current_account_id
 from wallet.errors import ApiError
 from wallet.ledger import post_entry
 from wallet.money import NonNegativeMoney, PositiveMoney, parse_amount, provider_fee
+from wallet.ratelimit import rate_limited_account_id
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ class WebhookResult(BaseModel):
 async def create_deposit(
     request: Request,
     body: DepositIn,
-    account_id: Annotated[UUID, Depends(current_account_id)],
+    account_id: Annotated[UUID, Depends(rate_limited_account_id)],
 ) -> DepositOut:
     deposit_id = uuid4()
     # Called outside any DB transaction; the deposit is stored only once the invoice exists,

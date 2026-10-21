@@ -7,9 +7,9 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field, StrictInt
 
-from wallet.auth import current_account_id
 from wallet.ledger import post_entry
 from wallet.money import credits_price
+from wallet.ratelimit import rate_limited_account_id
 
 router = APIRouter()
 
@@ -33,7 +33,7 @@ class PurchaseOut(BaseModel):
 async def create_purchase(
     request: Request,
     body: PurchaseIn,
-    account_id: Annotated[UUID, Depends(current_account_id)],
+    account_id: Annotated[UUID, Depends(rate_limited_account_id)],
 ) -> PurchaseOut:
     price = credits_price(body.credits)
     purchase_id = uuid4()
