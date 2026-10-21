@@ -1,0 +1,42 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ledger
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ledger}
+      POSTGRES_DB: ledger
+    ports:
+      - "55432:5432"
+    volumes:
+      - ./docker/create-test-db.sql:/docker-entrypoint-initdb.d/create-test-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ledger -d ledger"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  provider:
+    build: .
+    command: ["uvicorn", "--factory", "provider_mock.app:create_app", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      PROVIDER_API_KEY: ${PROVIDER_API_KEY:-dev-provider-key}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-dev-webhook-secret}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8001}
+    ports:
+      - "8001:8001"
+
+  wallet:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://ledger:${POSTGRES_PASSWORD:-ledger}@db:5432/ledger
+      PROVIDER_URL: http://provider:8001
+      CALLBACK_URL: http://wallet:8000/v1/webhooks/provider
+      PROVIDER_API_KEY: ${PROVIDER_API_KEY:-dev-provider-key}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-dev-webhook-secret}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      provider:
+        condition: service_started
