@@ -113,6 +113,8 @@ async def apply_invoice_status(
     event_id: str | None,
 ) -> Literal["applied", "ignored"]:
     """Closes a pending deposit exactly once; the webhook and reconciliation both use it."""
+    if status not in FINAL_STATUSES:
+        raise ValueError(f"Not a final invoice status: {status!r}")
     deposit = await conn.fetchrow(
         "SELECT id, account_id, status FROM deposits WHERE invoice_id = $1 FOR UPDATE",
         invoice_id,
