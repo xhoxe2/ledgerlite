@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from wallet.deposits import apply_invoice_status
+from wallet.invoice_status import apply_invoice_status
 
 pytestmark = pytest.mark.anyio
 
@@ -217,13 +217,13 @@ async def test_a_new_event_for_a_closed_deposit_is_ignored_and_logged(
     await pending_deposit()
     await send_webhook(status="expired", paid_amount="0.00")
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="wallet.deposits"):
+    with caplog.at_level(logging.WARNING, logger="wallet.invoice_status"):
         late = await send_webhook(event_id="evt_2")
     assert late.json() == {"result": "ignored"}
     warnings = [
         record.getMessage()
         for record in caplog.records
-        if record.name == "wallet.deposits" and record.levelno == logging.WARNING
+        if record.name == "wallet.invoice_status" and record.levelno == logging.WARNING
     ]
     assert any("inv_1" in message and "evt_2" in message for message in warnings), warnings
 
@@ -234,10 +234,10 @@ async def test_a_repeat_of_the_closing_event_is_ignored_without_a_warning(
     await pending_deposit()
     await send_webhook()
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="wallet.deposits"):
+    with caplog.at_level(logging.WARNING, logger="wallet.invoice_status"):
         repeat = await send_webhook()
     assert repeat.json() == {"result": "ignored"}
-    assert [r for r in caplog.records if r.name == "wallet.deposits"] == []
+    assert [r for r in caplog.records if r.name == "wallet.invoice_status"] == []
 
 
 async def test_the_providers_own_webhook_after_a_reconcile_is_ignored_without_a_warning(
@@ -253,10 +253,10 @@ async def test_the_providers_own_webhook_after_a_reconcile_is_ignored_without_a_
             event_id=None,
         )
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="wallet.deposits"):
+    with caplog.at_level(logging.WARNING, logger="wallet.invoice_status"):
         late = await send_webhook()
     assert late.json() == {"result": "ignored"}
-    assert [r for r in caplog.records if r.name == "wallet.deposits"] == []
+    assert [r for r in caplog.records if r.name == "wallet.invoice_status"] == []
     assert await balance_of(app, account_id) == Decimal("9.85")
 
 

@@ -9,8 +9,8 @@ from uuid import UUID, uuid4
 from wallet.auth import hash_api_key, new_api_key
 from wallet.config import Settings
 from wallet.db import create_pool
-from wallet.deposits import reconcile
 from wallet.provider import new_provider_client
+from wallet.reconcile import reconcile
 
 
 async def create_account(database_url: str, name: str) -> tuple[UUID, str]:

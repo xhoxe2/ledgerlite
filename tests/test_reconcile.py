@@ -6,8 +6,8 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from wallet.deposits import reconcile
 from wallet.provider import new_provider_client
+from wallet.reconcile import reconcile
 
 pytestmark = pytest.mark.anyio
 
