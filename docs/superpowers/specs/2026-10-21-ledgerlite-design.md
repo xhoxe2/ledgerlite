@@ -55,7 +55,8 @@ wallet ──▶ PostgreSQL
 | Файл | Відповідальність |
 |---|---|
 | `provider_mock/app.py` | увесь мок: сховище в пам'яті, маршрути, підпис і надсилання вебхука |
-| `wallet/app.py` | `create_app()`: lifespan (пул asyncpg, httpx-клієнт провайдера, `schema.sql`), обробники помилок, роутери |
+| `wallet/app.py` | `create_app()`: lifespan (пул asyncpg, httpx-клієнт провайдера), обробники помилок, роутери |
+| `wallet/db.py` | створення пулу asyncpg і застосування `schema.sql` |
 | `wallet/config.py` | `Settings` із `os.environ` |
 | `wallet/schema.sql` | схема БД |
 | `wallet/errors.py` | `ApiError` і єдиний формат помилок |
@@ -72,7 +73,7 @@ wallet ──▶ PostgreSQL
 | `wallet/transactions.py` | `GET /v1/transactions` |
 | `wallet/cli.py` | команди `create-account` і `reconcile` |
 
-Один `Dockerfile` (python:3.12-slim + uv) на обидва сервіси. Compose запускає `db` (postgres:17-alpine з healthcheck), `provider` і `wallet`; wallet чекає, доки БД стане здоровою. Wallet стартує командою `uvicorn --factory wallet.app:create_app`, provider — `uvicorn provider_mock.app:app`.
+Один `Dockerfile` (python:3.12-slim + uv) на обидва сервіси. Compose запускає `db` (postgres:17-alpine з healthcheck), `provider` і `wallet`; wallet чекає, доки БД стане здоровою. Обидва сервіси стартують через фабрику застосунку: `uvicorn --factory wallet.app:create_app` і `uvicorn --factory provider_mock.app:create_app`.
 
 ### Конфігурація
 
@@ -86,7 +87,7 @@ wallet ──▶ PostgreSQL
 | `PUBLIC_URL` | provider | `http://localhost:8001` (з нього складається `pay_url`) |
 | `POSTGRES_PASSWORD` | db | `ledger` |
 
-У compose змінні мають dev-значення за замовчуванням (`${VAR:-…}`), тому на чистому клоні `docker compose up` працює без `.env`. Усі змінні перелічено в `.env.example`. Справжніх секретів у репозиторії немає. Порт БД назовні не відкривається.
+У compose змінні мають dev-значення за замовчуванням (`${VAR:-…}`), тому на чистому клоні `docker compose up` працює без `.env`. Усі змінні перелічено в `.env.example`. Справжніх секретів у репозиторії немає. БД доступна з хоста на порту 55432: на ній ідуть тести, а базу `ledger_test` створює `docker/create-test-db.sql` під час першого старту контейнера.
 
 ## 4. Модель даних
 
@@ -133,7 +134,7 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
     key          TEXT NOT NULL,
     request_hash TEXT NOT NULL,
     status_code  INT,
-    response     JSONB,
+    response     TEXT,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (account_id, key)
 );
@@ -154,7 +155,7 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 - `transfers` і `purchases` не потрібні: обидві ноги переказу й покупка є записами в `ledger_entries` зі спільним `ref_id`.
 - `webhook_events` не потрібна. Статуси провайдера фінальні, тож і дубль із тим самим `event_id`, і пізній вебхук упираються в один перехід `pending → фінальний` під `FOR UPDATE`. `event_id`, який закрив депозит, лишається в `closed_by_event_id` для аудиту.
 - Статусу `failed` немає: депозит пишеться в БД лише після того, як провайдер повернув інвойс.
-- `idempotency_keys.status_code` і `response` заповнюються в тій самій транзакції, що й вставка ключа, тож інші транзакції ніколи не бачать там `NULL`.
+- `idempotency_keys.status_code` і `response` заповнюються в тій самій транзакції, що й вставка ключа, тож інші транзакції ніколи не бачать там `NULL`. `response` — точне тіло відповіді текстом, а не JSONB: JSONB переставляє ключі, а повтор має повернути ті самі байти.
 - Ключі ідемпотентності та вікна rate limit ніколи не видаляються; у коді це позначено коментарем `shortcut:`.
 
 ## 5. Гроші
@@ -211,10 +212,10 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 2. `provider.create_invoice()` надсилає `POST /invoices` з `amount`, `currency: "USD"`, `external_id = deposit_id` і `callback_url = CALLBACK_URL`. Таймаут: 2 с на з'єднання, 5 с на відповідь. Під час виклику транзакція БД не відкрита.
 3. Помилки провайдера:
    - таймаут → 504 `provider_timeout`;
-   - немає з'єднання → 503 `provider_unavailable`;
+   - немає з'єднання або інша помилка запиту (`httpx.RequestError`) → 503 `provider_unavailable`;
    - відповідь 4xx/5xx або тіло без потрібних полів → 502 `provider_error`.
 
-   `httpx.TimeoutException` є підкласом `httpx.TransportError`, тож таймаут перехоплюється першим.
+   `httpx.TimeoutException` є підкласом `httpx.RequestError`, тож таймаут перехоплюється першим.
 4. Після успіху депозит записується зі статусом `pending`. Відповідь 201: `{"deposit_id", "status": "pending", "amount", "pay_url"}`.
 
 ### 6.4 `POST /v1/webhooks/provider`
@@ -315,7 +316,7 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 
 ## 8. Тестування
 
-- Лише справжній PostgreSQL. URL береться з `TEST_DATABASE_URL`. `conftest` застосовує `schema.sql` і очищує таблиці перед кожним тестом. Локально це тимчасовий кластер PostgreSQL 17 у scratch-папці, у CI — service-контейнер `postgres:17`.
+- Лише справжній PostgreSQL. URL береться з `TEST_DATABASE_URL`. `conftest` застосовує `schema.sql` і очищує таблиці перед кожним тестом. Локально це `docker compose up -d db` (порт 55432) або тимчасовий кластер PostgreSQL 17 на тому ж порту, у CI — service-контейнер `postgres:17`.
 - Застосунок тестується через `httpx.AsyncClient(transport=ASGITransport(app))` усередині `app.router.lifespan_context(app)`. Провайдера підміняє `httpx.MockTransport`.
 - TDD: кожен тест спершу падає з очікуваної причини, лише потім пишеться код.
 - Обов'язкові з ТЗ:
