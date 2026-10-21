@@ -57,3 +57,24 @@ async def test_reconcile_settles_old_pending_deposits(app, settings, make_accoun
         "inv_broken": "pending",
         "inv_fresh": "pending",
     }
+
+
+@pytest.mark.parametrize(
+    ("status", "paid_amount", "balance"),
+    [("partially_paid", "7.50", "7.39"), ("expired", "0.00", "0.00")],
+)
+async def test_reconcile_settles_partially_paid_and_expired_deposits(
+    app, settings, make_account, status, paid_amount, balance
+):
+    account_id, _ = await make_account()
+    await add_pending_deposit(app, account_id, "inv_final", minutes_ago=20)
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": status, "paid_amount": paid_amount})
+
+    async with new_provider_client(settings, httpx.MockTransport(answer)) as client:
+        counts = await reconcile(app.state.pool, client, older_than_minutes=15)
+
+    assert counts == {"resolved": 1, "pending": 0, "failed": 0}
+    assert await app.state.pool.fetchval("SELECT balance_usd FROM accounts") == Decimal(balance)
+    assert await app.state.pool.fetchval("SELECT status FROM deposits") == status

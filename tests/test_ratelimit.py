@@ -21,10 +21,25 @@ async def buy(client, headers):
     return await client.post("/v1/purchases", headers=headers, json={"credits": 1})
 
 
-async def test_thirty_first_post_in_a_minute_is_429(app, client, make_account):
+@pytest.mark.parametrize(
+    ("path", "body", "extra_headers"),
+    [
+        ("/v1/deposits", {"amount": "10.00"}, {}),
+        (
+            "/v1/transfers",
+            {"to_account_id": "00000000-0000-0000-0000-000000000001", "amount": "1.00"},
+            {"Idempotency-Key": "key-1"},
+        ),
+        ("/v1/purchases", {"credits": 1}, {}),
+    ],
+    ids=["deposits", "transfers", "purchases"],
+)
+async def test_thirty_first_post_in_a_minute_is_429_on_every_post_route(
+    app, client, make_account, path, body, extra_headers
+):
     account_id, headers = await make_account()
     await fill_current_window(app, account_id, 30)
-    response = await buy(client, headers)
+    response = await client.post(path, headers=headers | extra_headers, json=body)
     assert response.status_code == 429
     assert response.json()["error"]["code"] == "rate_limited"
     assert 1 <= int(response.headers["Retry-After"]) <= 60
@@ -62,3 +77,5 @@ async def test_reads_are_not_limited(app, client, make_account):
 async def test_provider_webhook_is_not_limited(client):
     responses = [await client.post("/v1/webhooks/provider", content=b"{}") for _ in range(31)]
     assert {r.status_code for r in responses} == {401}
+    # A 401 from the limiter's API-key check would pass the line above; this one is the signature's.
+    assert {r.json()["error"]["code"] for r in responses} == {"invalid_signature"}

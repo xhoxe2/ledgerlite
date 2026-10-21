@@ -240,6 +240,26 @@ async def test_a_repeat_of_the_closing_event_is_ignored_without_a_warning(
     assert [r for r in caplog.records if r.name == "wallet.deposits"] == []
 
 
+async def test_the_providers_own_webhook_after_a_reconcile_is_ignored_without_a_warning(
+    app, pending_deposit, send_webhook, caplog
+):
+    account_id = await pending_deposit()
+    async with app.state.pool.acquire() as conn, conn.transaction():
+        await apply_invoice_status(
+            conn,
+            invoice_id="inv_1",
+            status="paid",
+            paid_amount=Decimal("10.00"),
+            event_id=None,
+        )
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="wallet.deposits"):
+        late = await send_webhook()
+    assert late.json() == {"result": "ignored"}
+    assert [r for r in caplog.records if r.name == "wallet.deposits"] == []
+    assert await balance_of(app, account_id) == Decimal("9.85")
+
+
 async def test_a_status_that_is_not_final_is_refused_and_changes_nothing(app, pending_deposit):
     account_id = await pending_deposit()
     with pytest.raises(ValueError):
@@ -289,6 +309,16 @@ async def test_bad_signature_is_401_and_credits_nothing(
 async def test_timestamp_inside_the_window_is_accepted(pending_deposit, send_webhook):
     await pending_deposit()
     assert (await send_webhook(timestamp_offset=-290)).status_code == 200
+
+
+async def test_the_timestamp_window_is_five_minutes(app, pending_deposit, send_webhook):
+    account_id = await pending_deposit()
+    too_old = await send_webhook(timestamp_offset=-301)
+    assert too_old.status_code == 401
+    assert too_old.json()["error"]["code"] == "invalid_signature"
+    assert await balance_of(app, account_id) == Decimal("0.00")
+    assert (await send_webhook(timestamp_offset=-299)).status_code == 200
+    assert await balance_of(app, account_id) == Decimal("9.85")
 
 
 async def test_missing_signature_headers_are_401(client, pending_deposit):
