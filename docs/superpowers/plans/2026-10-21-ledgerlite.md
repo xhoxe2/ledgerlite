@@ -33,13 +33,14 @@
 
 ```bash
 PG=/opt/homebrew/opt/postgresql@17/bin
-"$PG/initdb" -D "$PGDATA_DIR" -U ledger --auth=trust
+export LC_ALL=C
+"$PG/initdb" -D "$PGDATA_DIR" -U ledger --auth=trust --no-locale -E UTF8
 "$PG/pg_ctl" -D "$PGDATA_DIR" -l "$PGDATA_DIR/server.log" \
-  -o "-p 55432 -c listen_addresses=localhost -c unix_socket_directories=''" start
+  -o "-p 55432 -c listen_addresses=localhost -c unix_socket_directories=''" -w start
 "$PG/createdb" -h localhost -p 55432 -U ledger ledger_test
 ```
 
-`unix_socket_directories=''` потрібен тому, що на macOS шлях до сокета в довгій тимчасовій папці перевищує ліміт довжини.
+`unix_socket_directories=''` потрібен тому, що на macOS шлях до сокета в довгій тимчасовій папці перевищує ліміт довжини. `LC_ALL=C` і `--no-locale` потрібні, коли `LANG` порожній: інакше `initdb` не приймає локаль, а сервер на macOS не стартує («postmaster became multithreaded»).
 
 ## Структура файлів
 
