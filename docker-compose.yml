@@ -24,6 +24,12 @@ services:
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8001}
     ports:
       - "8001:8001"
+    healthcheck:
+      # The slim image has no curl, so the check uses the image's own Python.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
 
   wallet:
     build: .
@@ -35,8 +41,13 @@ services:
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-dev-webhook-secret}
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
     depends_on:
       db:
         condition: service_healthy
       provider:
-        condition: service_started
+        condition: service_healthy

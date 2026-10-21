@@ -8,8 +8,11 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ValidationError
 
 from wallet import provider
+from wallet.errors import ApiError
 from wallet.invoice_status import InvoiceStatus, apply_invoice_status
 from wallet.money import NonNegativeMoney
+
+MAX_WEBHOOK_BODY_BYTES = 64 * 1024  # provider events are ~200 bytes
 
 router = APIRouter()
 
@@ -26,10 +29,26 @@ class WebhookResult(BaseModel):
     result: Literal["applied", "ignored"]
 
 
+async def _read_limited_body(request: Request) -> bytes:
+    # Counts the bytes as they arrive: a chunked body has no Content-Length to check.
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_WEBHOOK_BODY_BYTES:
+            raise ApiError(
+                413,
+                "payload_too_large",
+                "Webhook body is too large",
+                {"max_bytes": MAX_WEBHOOK_BODY_BYTES},
+            )
+        body += chunk
+    return bytes(body)
+
+
 @router.post("/v1/webhooks/provider", response_model=WebhookResult)
 async def provider_webhook(request: Request) -> WebhookResult:
-    # The signature covers the raw bytes, so it is checked before the body is parsed.
-    raw_body = await request.body()
+    # The signature covers the raw bytes, so it is checked before the body is parsed;
+    # the size limit comes first because checking the signature needs the whole body.
+    raw_body = await _read_limited_body(request)
     provider.verify_signature(
         request.app.state.settings.webhook_secret,
         raw_body,

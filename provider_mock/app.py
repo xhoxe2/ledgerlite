@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 Amount = Annotated[str, Field(pattern=r"^(0|[1-9][0-9]{0,11})(\.[0-9]{1,2})?$")]
@@ -87,9 +87,15 @@ def create_app(
                     deliveries.append({"error": type(exc).__name__})
         return deliveries
 
-    app = FastAPI(title="Payment provider mock", dependencies=[Depends(require_api_key)])
+    app = FastAPI(title="Payment provider mock")
+    # Every route but /health needs the bearer key.
+    invoice_routes = APIRouter(dependencies=[Depends(require_api_key)])
 
-    @app.post("/invoices", status_code=201)
+    @app.get("/health")
+    async def health() -> dict:
+        return {"status": "ok"}
+
+    @invoice_routes.post("/invoices", status_code=201)
     async def create_invoice(body: InvoiceIn) -> dict:
         invoice_id = f"inv_{secrets.token_hex(8)}"
         invoices[invoice_id] = {
@@ -107,11 +113,11 @@ def create_app(
             "pay_url": f"{public_url}/pay/{invoice_id}",
         }
 
-    @app.get("/invoices/{invoice_id}")
+    @invoice_routes.get("/invoices/{invoice_id}")
     async def get_invoice(invoice_id: str) -> dict:
         return find_invoice(invoice_id)
 
-    @app.post("/invoices/{invoice_id}/simulate")
+    @invoice_routes.post("/invoices/{invoice_id}/simulate")
     async def simulate(invoice_id: str, body: SimulateIn) -> dict:
         invoice = find_invoice(invoice_id)
         if invoice["status"] in FINAL_STATUSES:
@@ -125,4 +131,6 @@ def create_app(
             deliveries = await deliver_webhook(invoice, copies=2 if body.duplicate else 1)
         return {"invoice": invoice, "deliveries": deliveries}
 
+    # include_router copies the routes declared so far, so it comes after them.
+    app.include_router(invoice_routes)
     return app

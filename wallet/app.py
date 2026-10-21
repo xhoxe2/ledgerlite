@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI
 
-from wallet import accounts, deposits, purchases, transactions, transfers, webhooks
+from wallet import accounts, deposits, health, purchases, transactions, transfers, webhooks
 from wallet.config import Settings
 from wallet.db import create_pool
 from wallet.errors import install_error_handlers
@@ -31,6 +31,7 @@ def create_app(
     app = FastAPI(title="LedgerLite wallet", lifespan=lifespan)
     app.state.settings = settings
     install_error_handlers(app)
+    app.include_router(health.router)
     app.include_router(accounts.router)
     app.include_router(deposits.router)
     app.include_router(webhooks.router)
