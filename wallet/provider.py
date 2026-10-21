@@ -2,6 +2,7 @@
 
 import hashlib
 import hmac
+import logging
 import time
 from decimal import Decimal
 
@@ -9,6 +10,8 @@ import httpx
 
 from wallet.config import Settings
 from wallet.errors import ApiError
+
+logger = logging.getLogger(__name__)
 
 PROVIDER_TIMEOUT = httpx.Timeout(5.0, connect=2.0)
 
@@ -53,10 +56,13 @@ async def _call(
     try:
         response = await client.request(method, url, json=json)
     except httpx.TimeoutException as exc:  # a RequestError subclass, so it is caught first
+        logger.warning("Provider call %s %s timed out: %r", method, url, exc)
         raise ApiError(504, "provider_timeout", "Payment provider did not respond in time") from exc
     except httpx.RequestError as exc:
+        logger.warning("Provider call %s %s failed: %r", method, url, exc)
         raise ApiError(503, "provider_unavailable", "Payment provider is unavailable") from exc
     if response.is_error:
+        logger.warning("Provider call %s %s returned status %s", method, url, response.status_code)
         raise ApiError(
             502,
             "provider_error",
@@ -68,6 +74,7 @@ async def _call(
     except ValueError:
         payload = None
     if not isinstance(payload, dict) or not all(isinstance(payload.get(k), str) for k in required):
+        logger.warning("Provider call %s %s returned an unexpected body", method, url)
         raise ApiError(502, "provider_error", "Payment provider returned an unexpected response")
     return payload
 

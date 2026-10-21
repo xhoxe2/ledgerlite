@@ -116,7 +116,8 @@ async def apply_invoice_status(
     if status not in FINAL_STATUSES:
         raise ValueError(f"Not a final invoice status: {status!r}")
     deposit = await conn.fetchrow(
-        "SELECT id, account_id, status FROM deposits WHERE invoice_id = $1 FOR UPDATE",
+        "SELECT id, account_id, status, closed_by_event_id FROM deposits "
+        "WHERE invoice_id = $1 FOR UPDATE",
         invoice_id,
     )
     if deposit is None:
@@ -124,6 +125,14 @@ async def apply_invoice_status(
             404, "unknown_invoice", "No deposit for this invoice", {"invoice_id": invoice_id}
         )
     if deposit["status"] != "pending":
+        if event_id != deposit["closed_by_event_id"]:
+            logger.warning(
+                "Ignored event %s (status %s) for invoice %s: deposit already closed by event %s",
+                event_id,
+                status,
+                invoice_id,
+                deposit["closed_by_event_id"],
+            )
         return "ignored"
     paid = fee = credited = None
     if status != "expired":
