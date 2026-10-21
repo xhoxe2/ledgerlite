@@ -1,5 +1,8 @@
-"""Payment provider contract: invoice calls out to the provider."""
+"""Payment provider contract: invoice calls out, webhook signatures in."""
 
+import hashlib
+import hmac
+import time
 from decimal import Decimal
 
 import httpx
@@ -63,3 +66,30 @@ async def _call(
     if not isinstance(payload, dict) or not all(isinstance(payload.get(k), str) for k in required):
         raise ApiError(502, "provider_error", "Payment provider returned an unexpected response")
     return payload
+
+
+SIGNATURE_TOLERANCE_SECONDS = 300
+
+
+def verify_signature(
+    secret: str, raw_body: bytes, *, timestamp: str | None, signature: str | None
+) -> None:
+    """Raises 401 unless the body carries our signature and a timestamp within 5 minutes of now."""
+    if not timestamp or not signature or not signature.startswith("sha256="):
+        raise _invalid_signature()
+    try:
+        sent_at = int(timestamp)
+    except ValueError:
+        raise _invalid_signature() from None
+    if abs(time.time() - sent_at) > SIGNATURE_TOLERANCE_SECONDS:
+        raise _invalid_signature()
+    expected = hmac.new(secret.encode(), timestamp.encode() + b"." + raw_body, hashlib.sha256)
+    # Bytes, not str: compare_digest raises TypeError on str with non-ASCII characters.
+    if not hmac.compare_digest(
+        expected.hexdigest().encode(), signature.removeprefix("sha256=").encode()
+    ):
+        raise _invalid_signature()
+
+
+def _invalid_signature() -> ApiError:
+    return ApiError(401, "invalid_signature", "Webhook signature is missing, stale or wrong")
