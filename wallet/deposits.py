@@ -1,11 +1,13 @@
 """Deposits: an invoice at the provider, closed later by the provider's webhook."""
 
+import logging
 from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Literal, get_args
 from uuid import UUID, uuid4
 
 import asyncpg
+import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ValidationError
@@ -14,9 +16,10 @@ from wallet import provider
 from wallet.auth import current_account_id
 from wallet.errors import ApiError
 from wallet.ledger import post_entry
-from wallet.money import NonNegativeMoney, PositiveMoney, provider_fee
+from wallet.money import NonNegativeMoney, PositiveMoney, parse_amount, provider_fee
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 InvoiceStatus = Literal["paid", "partially_paid", "expired"]
 FINAL_STATUSES = get_args(InvoiceStatus)
@@ -147,3 +150,38 @@ async def apply_invoice_status(
         event_id,
     )
     return "applied"
+
+
+async def reconcile(
+    pool: asyncpg.Pool, client: httpx.AsyncClient, older_than_minutes: int
+) -> dict[str, int]:
+    """Asks the provider about deposits still pending after N minutes: their webhook was lost."""
+    rows = await pool.fetch(
+        """
+        SELECT invoice_id FROM deposits
+        WHERE status = 'pending' AND created_at < now() - make_interval(mins => $1::int)
+        ORDER BY created_at
+        """,
+        older_than_minutes,
+    )
+    counts = {"resolved": 0, "pending": 0, "failed": 0}
+    for row in rows:
+        invoice_id = row["invoice_id"]
+        try:
+            invoice = await provider.get_invoice(client, invoice_id)
+            if invoice["status"] not in FINAL_STATUSES:
+                counts["pending"] += 1
+                continue
+            async with pool.acquire() as conn, conn.transaction():
+                await apply_invoice_status(
+                    conn,
+                    invoice_id=invoice_id,
+                    status=invoice["status"],
+                    paid_amount=parse_amount(invoice["paid_amount"]),
+                    event_id=None,
+                )
+            counts["resolved"] += 1
+        except Exception:  # one bad invoice must not stop the rest; it is logged and counted
+            logger.exception("Reconciliation failed for invoice %s", invoice_id)
+            counts["failed"] += 1
+    return counts

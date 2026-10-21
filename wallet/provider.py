@@ -38,6 +38,10 @@ async def create_invoice(
     )
 
 
+async def get_invoice(client: httpx.AsyncClient, invoice_id: str) -> dict:
+    return await _call(client, "GET", f"/invoices/{invoice_id}", required=("status", "paid_amount"))
+
+
 async def _call(
     client: httpx.AsyncClient,
     method: str,
