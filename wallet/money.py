@@ -4,7 +4,7 @@ import re
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated
 
-from pydantic import BeforeValidator, Field
+from pydantic import BeforeValidator, Field, WithJsonSchema
 
 CENT = Decimal("0.01")
 PROVIDER_FEE_RATE = Decimal("0.015")
@@ -24,8 +24,13 @@ def parse_amount(value: object) -> Decimal:
     return to_cents(Decimal(value))
 
 
-PositiveMoney = Annotated[Decimal, BeforeValidator(parse_amount), Field(gt=0)]
-NonNegativeMoney = Annotated[Decimal, BeforeValidator(parse_amount), Field(ge=0)]
+# Without it the schema says number | string, and Swagger's sample, 0, is rejected with 422.
+_AMOUNT_SCHEMA = WithJsonSchema(
+    {"type": "string", "pattern": f"^{_AMOUNT.pattern}$", "examples": ["10.00"]}
+)
+
+PositiveMoney = Annotated[Decimal, BeforeValidator(parse_amount), Field(gt=0), _AMOUNT_SCHEMA]
+NonNegativeMoney = Annotated[Decimal, BeforeValidator(parse_amount), Field(ge=0), _AMOUNT_SCHEMA]
 
 
 def provider_fee(paid: Decimal) -> Decimal:
