@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI
 
-from wallet import accounts, deposits, transfers
+from wallet import accounts, deposits, purchases, transactions, transfers
 from wallet.config import Settings
 from wallet.db import create_pool
 from wallet.errors import install_error_handlers
@@ -34,4 +34,6 @@ def create_app(
     app.include_router(accounts.router)
     app.include_router(deposits.router)
     app.include_router(transfers.router)
+    app.include_router(purchases.router)
+    app.include_router(transactions.router)
     return app
